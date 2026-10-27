@@ -131,29 +131,11 @@ jobs:
           emulator-options: >-
             -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
             -camera-back none -camera-front none
-          script: |
-            set -e
-            APK=$(find apk -name '*.apk' | head -n 1)
-            echo "Installing $APK"
-            adb install -r "$APK"
-
-            adb shell am start -W -n com.streamnest.tv/.MainActivity
-            sleep 25
-
-            PID=$(adb shell pidof com.streamnest.tv | tr -d '\r')
-            if [ -z "$PID" ]; then
-              echo "::error::release APK did not stay running (possible R8 keep-rule problem)"
-              adb logcat -d | tail -n 300
-              exit 1
-            fi
-
-            if adb logcat -d | grep -q "FATAL EXCEPTION"; then
-              echo "::error::release APK crashed with a fatal exception"
-              adb logcat -d | tail -n 300
-              exit 1
-            fi
-
-            echo "smoke test passed, pid=$PID"
+          # android-emulator-runner executes each line of `script:` in its own
+          # shell, so a variable set on one line is empty on the next — the
+          # install below used to receive an empty APK path and fail. The logic
+          # therefore lives in a file that is run in a single shell.
+          script: bash "$GITHUB_WORKSPACE/.github/scripts/smoke-test.sh"
 
   release:
     name: Publish APKs to GitHub Releases

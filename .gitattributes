@@ -1,0 +1,2 @@
+# Shell scripts run on Linux CI. Force LF so a CRLF checkout cannot break them.
+*.sh text eol=lf
