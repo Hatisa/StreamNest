@@ -1,0 +1,24 @@
+*.iml
+.gradle/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+output-metadata.json
+
+# Signing material must NEVER be committed.
+*.jks
+*.keystore
+keystore.properties
+release.keystore
+
+# CI
+/ci-out/

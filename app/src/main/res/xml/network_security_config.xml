@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  IPTV playlists legitimately mix https and plain http endpoints (many public
+  HLS origins are http-only), so cleartext must be permitted or a large share
+  of channels will fail with a "Cleartext HTTP traffic not permitted" error.
+  This is a deliberate trade-off: no credentials are ever sent over cleartext
+  by StreamNest itself, and all traffic stays inside the player.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
