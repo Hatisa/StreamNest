@@ -1,5 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Keep the user's own subscription URLs / Xtream credentials out of backups. -->
+<!--
+  Keep the user's own subscription URLs / Xtream credentials out of backups.
+  Two places under files/ hold secrets:
+
+    * files/datastore  the PlaylistSource entries themselves (URL, username,
+                       password) plus the health table.
+    * files/cache      the parsed channel cache. An Xtream live URL embeds the
+                       account credentials
+                       (…/live/<username>/<password>/<streamId>.m3u8), so this
+                       file leaks them just as surely as datastore does.
+
+  The channel cache lives in files/ rather than getCacheDir() on purpose: the
+  system may purge cacheDir at any time, which would break the "cold start shows
+  the previous channel list" guarantee. It therefore has to be excluded here
+  instead. (getCacheDir() is skipped by Auto Backup automatically, so no rule is
+  needed for it.)
+-->
 <full-backup-content>
     <exclude domain="file" path="datastore" />
+    <exclude domain="file" path="cache" />
 </full-backup-content>

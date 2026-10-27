@@ -36,25 +36,48 @@ object M3uParser {
         val merged = LinkedHashMap<String, MutableChannel>()
         var pending: Pending? = null
         var carriedGroup: String? = null
-
+        // Whether the current #EXTINF has already consumed a URL. Consecutive
+        // URLs are mirrors of the same channel, so `pending` deliberately
+        // survives them; but a directive that shows up *after* a URL belongs to
+        // the next entry, so those do clear it.
+        var pendingHasUrl = false
         for (raw in text.lineSequence()) {
             val line = raw.trim().removePrefix("\uFEFF").removeSuffix("\r")
             if (line.isEmpty()) continue
             val upper = line.uppercase()
             when {
-                upper.startsWith("#EXTINF") -> pending = parseExtInf(line)
+                upper.startsWith("#EXTINF") -> {
+                    pending = parseExtInf(line)
+                    pendingHasUrl = false
+                }
 
                 upper.startsWith("#EXTGRP:") -> {
                     carriedGroup = line.substringAfter(':').trim().ifBlank { null }
-                    pending?.let { p -> if (p.group.isNullOrBlank()) p.group = carriedGroup }
+                    if (pendingHasUrl) {
+                        // The group belongs to the entry that follows, not the one above.
+                        pending = null
+                    } else {
+                        pending?.let { p -> if (p.group.isNullOrBlank()) p.group = carriedGroup }
+                    }
                 }
 
-                upper.startsWith("#EXTVLCOPT:") || upper.startsWith("#KODIPROP:") ->
-                    pending?.withOption(line.substringAfter(':'))
+                upper.startsWith("#EXTVLCOPT:") || upper.startsWith("#KODIPROP:") -> {
+                    if (pendingHasUrl) {
+                        // Player options after the URL describe the next entry.
+                        pending = null
+                    } else {
+                        pending?.withOption(line.substringAfter(':'))
+                    }
+                }
 
                 line.startsWith("#") -> Unit // #EXTM3U, #EXT-X-*, comments
 
                 else -> {
+                    // Consecutive URLs under one #EXTINF are mirrors of the same
+                    // channel, and real playlists rely on that. `pending` is
+                    // therefore replaced only by the next #EXTINF — it is not
+                    // cleared here. It used to be, which silently discarded every
+                    // backup mirror after the first URL.
                     val p = pending
                     if (p != null && line.isNotBlank()) {
                         val group = p.group ?: carriedGroup
@@ -72,9 +95,11 @@ object M3uParser {
                                 sourceName = sourceName,
                             )
                         }
+                        // toChannel() de-duplicates by URL, so a playlist that
+                        // repeats the same mirror does not inflate the list.
                         entry.streams += buildStream(line, p)
+                        pendingHasUrl = true
                     }
-                    pending = null
                 }
             }
         }

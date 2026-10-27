@@ -54,4 +54,32 @@ class XmltvParserTest {
         assertNull(XmltvParser.parseTimestamp("not a date"))
         assertNull(XmltvParser.parseTimestamp(null))
     }
+
+    @Test
+    fun `rejects malformed timestamps instead of guessing`() {
+        // Out-of-range fields: month 13 / minute 45, and February 30th.
+        assertNull(XmltvParser.parseTimestamp("20261345204561"))
+        assertNull(XmltvParser.parseTimestamp("20260230200000"))
+        // An unexplained trailing character must not be read as UTC.
+        assertNull(XmltvParser.parseTimestamp("20261026200000x"))
+        // Offset minutes past 59 are not a valid offset.
+        assertNull(XmltvParser.parseTimestamp("20261026200000 +0860"))
+        // 11 digits is neither a date nor a date plus offset.
+        assertNull(XmltvParser.parseTimestamp("2026102620000"))
+    }
+
+    @Test
+    fun `accepts the offset forms real guides use`() {
+        val utc = XmltvParser.parseTimestamp("20261026200000 +0000")!!
+        assertEquals(utc, XmltvParser.parseTimestamp("20261026200000Z")!!)
+        // No offset at all is treated as UTC.
+        assertEquals(utc, XmltvParser.parseTimestamp("20261026200000")!!)
+        // A +0800 wall clock is eight hours earlier in UTC.
+        assertEquals(utc - 8 * 60 * 60 * 1000L, XmltvParser.parseTimestamp("20261026200000 +0800")!!)
+        // The colon form and the missing space are both accepted.
+        assertEquals(utc - 8 * 60 * 60 * 1000L, XmltvParser.parseTimestamp("20261026200000 +08:00")!!)
+        assertEquals(utc - 8 * 60 * 60 * 1000L, XmltvParser.parseTimestamp("20261026200000+0800")!!)
+        // Seconds may be omitted, in which case they are zero.
+        assertEquals(utc, XmltvParser.parseTimestamp("202610262000")!!)
+    }
 }

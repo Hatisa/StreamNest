@@ -1,9 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ counterpart of backup_rules.xml. Nothing under files/ is safe to
+  transfer off the device: datastore holds the user's subscription URLs and
+  Xtream credentials, and the channel cache holds Xtream live URLs with the
+  credentials baked into the path. See backup_rules.xml for why the cache is in
+  files/ and not cacheDir.
+-->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="file" path="datastore" />
+        <exclude domain="file" path="cache" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="file" path="datastore" />
+        <exclude domain="file" path="cache" />
     </device-transfer>
 </data-extraction-rules>

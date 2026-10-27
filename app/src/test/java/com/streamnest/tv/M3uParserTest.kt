@@ -52,6 +52,79 @@ class M3uParserTest {
     }
 
     @Test
+    fun `treats several URLs under one EXTINF as mirrors of the same channel`() {
+        // Real playlists list backups this way, with a single #EXTINF followed by
+        // every mirror URL. Only the first used to survive.
+        val m3u = """
+            #EXTM3U
+            #EXTINF:-1 tvg-id="x.tv",X TV
+            http://a/x.m3u8
+            http://b/x.m3u8
+            http://c/x.m3u8
+        """.trimIndent()
+
+        val channels = M3uParser.parse(m3u)
+
+        assertEquals(1, channels.size)
+        assertEquals(
+            listOf("http://a/x.m3u8", "http://b/x.m3u8", "http://c/x.m3u8"),
+            channels.first().streams.map { it.url },
+        )
+    }
+
+    @Test
+    fun `keeps a mirror separated from the entry by a comment`() {
+        val m3u = """
+            #EXTM3U
+            #EXTINF:-1 tvg-id="x.tv",X TV
+            http://a/x.m3u8
+            # a comment between the mirrors
+            http://b/x.m3u8
+        """.trimIndent()
+
+        assertEquals(2, M3uParser.parse(m3u).first().streams.size)
+    }
+
+    @Test
+    fun `applies EXTGRP that follows a URL to the next entry`() {
+        // The group directive sits below the previous entry's URL, so it must
+        // describe "Eurosport", not retro-label "DW English".
+        val m3u = """
+            #EXTM3U
+            #EXTINF:-1,DW English
+            http://host/dw.m3u8
+            #EXTGRP:Sports
+            #EXTINF:-1,Eurosport
+            http://host/euro.m3u8
+        """.trimIndent()
+
+        val channels = M3uParser.parse(m3u)
+
+        assertNull(channels.first { it.name == "DW English" }.group)
+        assertEquals("Sports", channels.first { it.name == "Eurosport" }.group)
+    }
+
+    @Test
+    fun `does not retro-apply player options placed after a URL`() {
+        val m3u = """
+            #EXTM3U
+            #EXTINF:-1,First
+            http://host/first.m3u8
+            #EXTVLCOPT:http-user-agent=UA-FOR-NEXT
+            #EXTINF:-1,Second
+            http://host/second.m3u8
+        """.trimIndent()
+
+        val channels = M3uParser.parse(m3u)
+
+        assertNull(channels.first { it.name == "First" }.primaryStream?.httpUserAgent)
+        assertEquals(
+            "UA-FOR-NEXT",
+            channels.first { it.name == "Second" }.primaryStream?.httpUserAgent,
+        )
+    }
+
+    @Test
     fun `applies EXTGRP to following entries`() {
         val m3u = """
             #EXTM3U

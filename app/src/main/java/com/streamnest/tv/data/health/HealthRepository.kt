@@ -43,6 +43,9 @@ class HealthRepository(
     /** Serialises disk writes; each write stores the freshest snapshot. */
     private val persistMutex = Mutex()
 
+    /** Only one probe pass at a time — see [check]. */
+    private val checkMutex = Mutex()
+
     suspend fun load() {
         _metrics.value = settings.metrics().associateBy { it.url }
     }
@@ -79,52 +82,103 @@ class HealthRepository(
     }
 
     /**
-     * Probes up to [maxTargets] streams, least-recently-checked first, so the
-     * table rotates instead of re-testing the same handful of streams.
+     * Probes up to [maxTargets] *channels*, least-recently-checked first, so the
+     * table rotates instead of re-testing the same handful of channels.
+     *
+     * Each channel contributes exactly one target: its mirror with the oldest
+     * measurement. Picking the primary stream (as this used to) meant a backup
+     * mirror never got a score at all, so the fail-over in PlayerViewModel was
+     * choosing between the primary's score and a constant 0.5. Rotating over the
+     * mirrors instead gives every URL a score within a few passes while keeping
+     * the per-pass cost proportional to the channel count.
      *
      * A light probe, not a bandwidth test: see [StreamProbe] for why. Returns the
-     * number of streams examined.
+     * number of channels examined.
+     *
+     * Two details matter for cost:
+     *  * the whole pass writes the table **once** ([applyBatch]) instead of once
+     *    per probe. Every write to [_metrics] wakes every collector — including
+     *    ChannelRepository's `combine`, which re-maps and re-sorts the entire
+     *    channel list. Writing per probe turned one 150-target pass into 150 full
+     *    re-sorts of a 20k-entry list.
+     *  * [checkMutex] serialises passes. The UI refresh and RefreshWorker can
+     *    fire together, and without this they would probe overlapping targets and
+     *    each pay for a full table rewrite.
      */
-    suspend fun check(channels: List<Channel>, maxTargets: Int = 150, concurrency: Int = 6): Int {
+    suspend fun check(
+        channels: List<Channel>,
+        maxTargets: Int = 150,
+        concurrency: Int = 6,
+    ): Int = checkMutex.withLock {
         val snapshot = _metrics.value
+
+        fun lastChecked(url: String) = snapshot[url]?.measuredAt ?: 0L
+
         val targets = channels
-            .mapNotNull { channel -> channel.primaryStream?.let { channel to it } }
-            .sortedBy { snapshot[it.second.url]?.measuredAt ?: 0L }
+            .mapNotNull { channel ->
+                channel.streams.minByOrNull { lastChecked(it.url) }?.let { channel to it }
+            }
+            .sortedBy { lastChecked(it.second.url) }
             .take(maxTargets)
-        if (targets.isEmpty()) return 0
+        if (targets.isEmpty()) return@withLock 0
 
         val semaphore = Semaphore(concurrency.coerceAtLeast(1))
 
-        coroutineScope {
+        val results: List<Pair<String, ProbeResult>> = coroutineScope {
             targets.map { (_, stream) ->
                 async {
                     semaphore.withPermit {
                         val result = runCatching {
                             probe.probe(stream.url, stream.httpUserAgent, stream.httpReferrer)
                         }.getOrElse { ProbeResult(false, 0, "probe_error") }
-
-                        // Blend against the value at write time, not against the
-                        // snapshot taken before a job that can run for minutes —
-                        // otherwise a probe pass would overwrite real playback
-                        // results collected while it was running.
-                        applyInMemory(stream.url) { prior, now ->
-                            val score = HealthScorer.blend(prior?.score, HealthScorer.scoreFromProbe(result))
-                            HealthRecord(
-                                url = stream.url,
-                                status = HealthScorer.statusFor(score, hasProbe = true),
-                                latencyMs = result.latencyMs,
-                                score = score,
-                                failureKind = result.failureKind,
-                                measuredAt = now,
-                            )
-                        }
+                        stream.url to result
                     }
                 }
             }.awaitAll()
         }
 
+        applyBatch(results)
         persist()
-        return targets.size
+        targets.size
+    }
+
+    /**
+     * Applies a whole probe pass in one shot.
+     *
+     * Blending happens here rather than inside each probe coroutine for two
+     * reasons: the previous score is read against the *current* table (so a probe
+     * result never overwrites a real playback failure recorded while the pass was
+     * running), and the table is published once instead of once per probe. Every
+     * publish wakes ChannelRepository's `combine`, which re-maps and re-sorts the
+     * entire channel list, so a pass now costs one re-sort instead of one per
+     * probe.
+     *
+     * The compare-and-set retry loop exists for the same reason as
+     * [applyInMemory]: a single-entry write from the UI thread (playback feedback)
+     * can land between reading [current] and publishing, and neither update may be
+     * dropped.
+     */
+    private fun applyBatch(results: List<Pair<String, ProbeResult>>) {
+        if (results.isEmpty()) return
+        while (true) {
+            val current = _metrics.value
+            val now = System.currentTimeMillis()
+            var next = current
+            for ((url, result) in results) {
+                val prior = next[url]
+                val score = HealthScorer.blend(prior?.score, HealthScorer.scoreFromProbe(result))
+                val record = HealthRecord(
+                    url = url,
+                    status = HealthScorer.statusFor(score, hasProbe = true),
+                    latencyMs = result.latencyMs,
+                    score = score,
+                    failureKind = result.failureKind,
+                    measuredAt = now,
+                )
+                next = next + (url to record)
+            }
+            if (_metrics.compareAndSet(current, next)) return
+        }
     }
 
     /**

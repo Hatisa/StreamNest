@@ -37,13 +37,6 @@ fun healthColor(score: Double): Color = when {
     else -> Color(0xFFFF6B6B)
 }
 
-/** Human-readable counterpart of [healthColor], for lists and tooltips. */
-fun healthLabel(score: Double): String = when {
-    score >= HealthScorer.OK_THRESHOLD -> "可用"
-    score >= HealthScorer.SLOW_THRESHOLD -> "较慢"
-    else -> "可能失效"
-}
-
 @Composable
 fun ChannelRow(
     channel: Channel,

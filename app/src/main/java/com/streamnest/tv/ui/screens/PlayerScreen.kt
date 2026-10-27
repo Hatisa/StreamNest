@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -107,7 +108,12 @@ fun PlayerScreen(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(240.dp)
+                    // 16:9 at the device width, instead of a fixed 240.dp box:
+                    // a hard-coded height looks wrong on both a tall phone (huge
+                    // empty bands) and a landscape/tablet layout (a letterboxed
+                    // strip). RESIZE_MODE_FIT below letterboxes anything that is
+                    // not 16:9 inside this frame.
+                    .aspectRatio(16f / 9f)
                     .background(Color.Black),
                 contentAlignment = Alignment.Center,
             ) {

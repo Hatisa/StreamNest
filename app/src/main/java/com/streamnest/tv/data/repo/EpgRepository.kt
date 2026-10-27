@@ -39,7 +39,13 @@ class EpgRepository(
 
     private val cacheFile = File(context.filesDir, "cache/epg.txt")
 
-    /** Rehydrates the last downloaded guide so EPG survives a restart. */
+    /**
+     * Rehydrates the last downloaded guide so EPG survives a restart.
+     *
+     * Lines are `channelId \t start \t stop \t title [\t description]`. The
+     * description column is optional so that caches written by older builds (four
+     * columns) still load.
+     */
     suspend fun loadFromCache() = withContext(Dispatchers.IO) {
         if (!cacheFile.exists()) return@withContext
         runCatching {
@@ -50,7 +56,15 @@ class EpgRepository(
                     val start = parts[1].toLongOrNull() ?: return@forEachLine
                     val stop = parts[2].toLongOrNull() ?: return@forEachLine
                     grouped.getOrPut(parts[0]) { mutableListOf() }
-                        .add(EpgProgramme(parts[0], start, stop, parts[3]))
+                        .add(
+                            EpgProgramme(
+                                channelId = parts[0],
+                                startMs = start,
+                                stopMs = stop,
+                                title = parts[3],
+                                description = parts.getOrNull(4)?.takeIf { it.isNotEmpty() },
+                            ),
+                        )
                 }
             }
             if (grouped.isNotEmpty()) _programmes.value = grouped
@@ -82,6 +96,9 @@ class EpgRepository(
     private fun writeCache(data: Map<String, List<EpgProgramme>>) {
         // A compact TSV rather than JSON: the guide is the largest thing we
         // store and it only ever needs to round-trip through our own parser.
+        // The synopsis is written as a fifth column — without it the "current
+        // programme" row could only ever show a title after a restart, because
+        // the cache was the only thing that survived and it dropped the field.
         runCatching {
             val dir = cacheFile.parentFile ?: return
             dir.mkdirs()
@@ -92,7 +109,9 @@ class EpgRepository(
                         out.append(channelId).append('\t')
                         out.append(p.startMs.toString()).append('\t')
                         out.append(p.stopMs.toString()).append('\t')
-                        out.append(p.title.replace('\t', ' ').replace('\n', ' '))
+                        out.append(p.title.sanitiseForTsv())
+                        out.append('\t')
+                        out.append(p.description.orEmpty().sanitiseForTsv())
                         out.append('\n')
                     }
                 }
@@ -105,4 +124,7 @@ class EpgRepository(
             }
         }
     }
+
+    /** Tabs and newlines would break the one-record-per-line format. */
+    private fun String.sanitiseForTsv(): String = replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')
 }

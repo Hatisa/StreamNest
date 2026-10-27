@@ -12,6 +12,9 @@ import com.streamnest.tv.data.model.HealthRecord
 import com.streamnest.tv.data.model.PlaylistSource
 import com.streamnest.tv.data.source.BuiltinSources
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.builtins.ListSerializer
@@ -32,6 +35,17 @@ class SettingsStore(private val context: Context) {
     private val sourceListSerializer = ListSerializer(PlaylistSource.serializer())
     private val metricListSerializer = ListSerializer(HealthRecord.serializer())
 
+    private val _sourcesCorrupt = MutableStateFlow(false)
+
+    /**
+     * True when the stored source JSON exists but could not be decoded.
+     *
+     * Exposed so the UI can say so out loud. The alternative — quietly showing
+     * the built-ins — reads exactly like "the user never added anything", which
+     * is how a corrupt preference file turns into a silent data loss report.
+     */
+    val sourcesCorrupt: StateFlow<Boolean> = _sourcesCorrupt.asStateFlow()
+
     // ---- sources -----------------------------------------------------------
 
     fun sourcesFlow(): Flow<List<PlaylistSource>> = context.dataStore.data.map { prefs ->
@@ -40,9 +54,17 @@ class SettingsStore(private val context: Context) {
 
     suspend fun sources(): List<PlaylistSource> = sourcesFlow().first()
 
-    /** Adds any built-in source that is missing, without touching user entries. */
+    /**
+     * Adds any built-in source that is missing, without touching user entries.
+     *
+     * Deliberately a no-op when the stored JSON is corrupt: this runs
+     * automatically at startup, so persisting here would overwrite the user's
+     * real sources with the built-in list without anyone asking. Leaving the bad
+     * value untouched keeps it recoverable.
+     */
     suspend fun ensureBuiltinsPresent() {
         val current = sources()
+        if (_sourcesCorrupt.value) return
         val existingIds = current.map { it.id }.toSet()
         val missing = BuiltinSources.defaultSources().filter { it.id !in existingIds }
         if (missing.isNotEmpty()) saveSources(current + missing)
@@ -52,10 +74,30 @@ class SettingsStore(private val context: Context) {
         context.dataStore.edit { it[SOURCES] = json.encodeToString(sourceListSerializer, sources) }
     }
 
+    /**
+     * Three outcomes, and conflating them is what made this lossy:
+     *  * nothing stored yet (fresh install) -> the built-ins; they are the
+     *    intended default and a caller may persist them;
+     *  * valid JSON -> the stored list;
+     *  * unreadable JSON -> the built-ins as a *display* fallback, with
+     *    [sourcesCorrupt] raised so [ensureBuiltinsPresent] will not write them
+     *    over the user's data and the UI can tell the user what happened.
+     *
+     * Note the contrast with [metrics], which also falls back on a decode error:
+     * losing the health table costs a re-probe, losing the source list costs the
+     * user their subscriptions.
+     */
     private fun decodeSources(raw: String?): List<PlaylistSource> {
-        if (raw.isNullOrBlank()) return BuiltinSources.defaultSources()
+        if (raw.isNullOrBlank()) {
+            _sourcesCorrupt.value = false
+            return BuiltinSources.defaultSources()
+        }
         return runCatching { json.decodeFromString(sourceListSerializer, raw) }
-            .getOrElse { BuiltinSources.defaultSources() }
+            .onSuccess { _sourcesCorrupt.value = false }
+            .getOrElse {
+                _sourcesCorrupt.value = true
+                BuiltinSources.defaultSources()
+            }
     }
 
     // ---- health metrics ----------------------------------------------------

@@ -66,8 +66,16 @@ class ChannelRepository(
     val channels: StateFlow<List<Channel>> =
         combine(_raw, health.metrics) { list, metrics ->
             val merged = list.map { channel ->
-                val record = channel.primaryStream?.url?.let { metrics[it] }
-                if (record == null) channel else channel.copy(health = record.score)
+                // A channel is as healthy as its best *measured* mirror. Scoring
+                // only the primary stream (as this used to) meant a channel whose
+                // one working URL was a backup still showed as failing, and made
+                // the mirror-failover path in PlayerViewModel look pointless.
+                // Streams with no probe yet are ignored rather than treated as
+                // 0.0, so an unmeasured mirror cannot drag a channel down.
+                val best = channel.streams
+                    .mapNotNull { metrics[it.url]?.score }
+                    .maxOrNull()
+                if (best == null) channel else channel.copy(health = best)
             }
             merged.sortedWith(
                 compareByDescending<Channel> { it.health }.thenBy { it.name.lowercase() },

@@ -7,7 +7,6 @@ import com.streamnest.tv.StreamNestApp
 import com.streamnest.tv.data.model.Channel
 import com.streamnest.tv.data.model.EpgProgramme
 import com.streamnest.tv.data.model.EpgQuery
-import com.streamnest.tv.data.model.HealthRecord
 import com.streamnest.tv.data.model.PlaylistSource
 import com.streamnest.tv.data.model.SourceKind
 import com.streamnest.tv.data.model.SourceStatus
@@ -36,7 +35,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     val channels: StateFlow<List<Channel>> = channelRepo.channels
     val statuses: StateFlow<List<SourceStatus>> = channelRepo.statuses
-    internal val healthMetrics: StateFlow<Map<String, HealthRecord>> = container.health.metrics
+
+    /**
+     * True when the stored source list could not be decoded. The screens surface
+     * this instead of letting the built-in fallback masquerade as "the user has
+     * no sources".
+     */
+    val sourcesCorrupt: StateFlow<Boolean> = settings.sourcesCorrupt
 
     val sources: StateFlow<List<PlaylistSource>> = settings.sourcesFlow()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())

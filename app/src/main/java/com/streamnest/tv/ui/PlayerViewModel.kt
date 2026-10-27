@@ -2,6 +2,7 @@ package com.streamnest.tv.ui
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -10,9 +11,12 @@ import com.streamnest.tv.StreamNestApp
 import com.streamnest.tv.data.model.Channel
 import com.streamnest.tv.data.model.Stream
 import com.streamnest.tv.player.Media3PlayerEngine
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 data class PlayerUiState(
     val channel: Channel? = null,
@@ -50,6 +54,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private var renderedSomething = false
     private var midStreamFailures = 0
 
+    /** In-flight mid-stream reconnect, so repeated errors cannot stack up. */
+    private var reconnectJob: Job? = null
+
     private val listener = object : Player.Listener {
 
         override fun onRenderedFirstFrame() {
@@ -71,20 +78,42 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             // Mid-stream failure. The URL clearly worked a moment ago (e.g. a
-            // flaky CDN edge), so jumping to a different broadcast would be
-            // worse than reconnecting: let Media3's own retry policy run, and
-            // only move on once the stream has failed repeatedly.
+            // flaky CDN edge), so jumping to a different broadcast is worse than
+            // reconnecting. `onPlayerError` means the player has already stopped
+            // (Media3 does NOT re-prepare on its own), so the reconnect has to be
+            // issued here — the earlier version only changed the message and left
+            // the UI stuck on "reconnecting" forever. Only after repeated
+            // failures do we demote the URL and fail over to the next mirror.
             midStreamFailures += 1
             if (url != null && midStreamFailures >= MID_STREAM_FAILURE_LIMIT) {
-                // Demote exactly once, then fail over (or give up) rather than
-                // leaving the UI stuck on "reconnecting" forever.
-                if (midStreamFailures == MID_STREAM_FAILURE_LIMIT) {
-                    container.health.recordPlaybackFailure(url, error.errorCodeName)
-                    advance()
-                }
+                container.health.recordPlaybackFailure(url, error.errorCodeName)
+                advance()
             } else {
-                _state.value = _state.value.copy(message = "播放中断，正在自动重连…")
+                scheduleReconnect()
             }
+        }
+    }
+
+    /**
+     * Re-prepares the current stream after a short delay.
+     *
+     * The reconnect goes through [prepareCurrent] with `resetFailures = false`
+     * on purpose: if re-preparing cleared the counter, a stream that dies every
+     * few seconds would reconnect forever instead of reaching the fail-over
+     * limit. One failure is counted per *attempt* — a successful frame resets it
+     * (see [onRenderedFirstFrame]). Any pending reconnect is cancelled first, and
+     * a reconnect whose counter was cleared meanwhile (user retry, channel
+     * change) bails out instead of fighting the newer state.
+     */
+    private fun scheduleReconnect() {
+        val attempt = midStreamFailures
+        val message = "播放中断，正在自动重连…（$attempt/$MID_STREAM_FAILURE_LIMIT）"
+        _state.value = _state.value.copy(retrying = true, message = message)
+        reconnectJob?.cancel()
+        reconnectJob = viewModelScope.launch {
+            delay(RECONNECT_DELAY_MS * attempt)
+            if (midStreamFailures != attempt) return@launch
+            prepareCurrent(resetFailures = false, connectingMessage = message)
         }
     }
 
@@ -100,7 +129,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         candidates = channel.streams.sortedByDescending { stream ->
             container.health.metrics.value[stream.url]?.score ?: 0.5
         }
-        index = 0
+        cancelReconnect()
+
         _state.value = PlayerUiState(
             channel = channel,
             attempt = 0,
@@ -116,23 +146,43 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     fun retry() {
         if (candidates.isEmpty()) return
+        cancelReconnect()
         index = 0
         renderedSomething = false
         midStreamFailures = 0
-        _state.value = _state.value.copy(failed = false, retrying = true, message = null)
         prepareCurrent()
     }
 
-    private fun prepareCurrent() {
+    /**
+     * Loads the stream at [index] into the player.
+     *
+     * [resetFailures] is false only for the automatic mid-stream reconnect, which
+     * must keep counting so that a repeatedly dying stream eventually fails over
+     * instead of reconnecting forever. [connectingMessage] is supplied by the
+     * reconnect path so the overlay explains *why* the picture is blank.
+     */
+    private fun prepareCurrent(resetFailures: Boolean = true, connectingMessage: String? = null) {
         val stream = candidates.getOrNull(index) ?: return
         renderedSomething = false
-        midStreamFailures = 0
+        if (resetFailures) {
+            midStreamFailures = 0
+            cancelReconnect()
+        }
+        // A message is present exactly while the user is waiting on a switch or a
+        // reconnect, which is also when the overlay belongs. The initial open of a
+        // channel deliberately leaves it null (and retrying false) so the player
+        // shows its own buffering indicator instead of a redundant overlay.
+        val message = connectingMessage ?: if (index > 0) {
+            "镜像 ${index + 1}/${candidates.size} 连接失败，正在切换"
+        } else {
+            null
+        }
         _state.value = _state.value.copy(
             attempt = index + 1,
             totalCandidates = candidates.size,
-            retrying = index > 0,
+            retrying = message != null,
             failed = false,
-            message = if (index > 0) "镜像 ${index + 1}/${candidates.size} 连接失败，正在切换" else null,
+            message = message,
         )
         player.setMediaSource(engine.createMediaSource(app, stream))
         player.prepare()
@@ -144,6 +194,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             index += 1
             prepareCurrent()
         } else {
+            cancelReconnect()
             _state.value = _state.value.copy(
                 retrying = false,
                 failed = true,
@@ -152,13 +203,22 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun cancelReconnect() {
+        reconnectJob?.cancel()
+        reconnectJob = null
+    }
+
     override fun onCleared() {
         super.onCleared()
+        cancelReconnect()
         player.removeListener(listener)
         player.release()
     }
 
     private companion object {
         const val MID_STREAM_FAILURE_LIMIT = 3
+
+        /** Backoff between mid-stream reconnect attempts, multiplied by attempt. */
+        const val RECONNECT_DELAY_MS = 1_000L
     }
 }

@@ -1,6 +1,7 @@
 package com.streamnest.tv.player
 
 import android.content.Context
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -30,14 +31,30 @@ object Media3PlayerEngine : PlayerEngine {
 
     override fun createPlayer(context: Context): ExoPlayer =
         ExoPlayer.Builder(context)
+            // Request audio focus explicitly. ExoPlayer defaults to
+            // `handleAudioFocus = false`, which means playback keeps going while
+            // the user takes a call or another app starts playing, and it mixes
+            // over whatever is already playing. USAGE_MEDIA + MOVIE is the
+            // correct pairing for a TV player: the system then ducks/pauses us
+            // like any other media app.
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .build(),
+                /* handleAudioFocus = */ true,
+            )
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .setHandleAudioBecomingNoisy(true)
             .build()
 
     override fun createMediaSource(context: Context, stream: Stream): MediaSource {
         val userAgent = stream.httpUserAgent ?: HttpHeaders.DEFAULT_USER_AGENT
+        // Referer only: the UA is set once via setUserAgent() below. Listing it in
+        // both places made DefaultHttpDataSource apply the same header twice on a
+        // request, and some origins treat a duplicated User-Agent as a broken
+        // request.
         val headerMap = LinkedHashMap<String, String>().apply {
-            put("User-Agent", userAgent)
             stream.httpReferrer?.let { put("Referer", it) }
         }
 

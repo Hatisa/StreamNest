@@ -14,41 +14,48 @@ class OkHttpTextFetcher(
     private val client: OkHttpClient = defaultClient(),
 ) : HttpTextFetcher {
 
-    override suspend fun getText(url: String, headers: Map<String, String>): String =
-        withContext(Dispatchers.IO) {
-            client.newCall(request(url, headers).build()).execute().use { response ->
-                if (!response.isSuccessful) {
-                    throw HttpTextFetcher.HttpException(response.code, "HTTP ${response.code} for $url")
-                }
-                response.body?.string()
-                    ?: throw HttpTextFetcher.HttpException(response.code, "Empty body for $url")
+    override suspend fun getText(
+        url: String,
+        headers: Map<String, String>,
+        maxBytes: Int,
+    ): String = withContext(Dispatchers.IO) {
+        client.newCall(request(url, headers).build()).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw HttpTextFetcher.HttpException(response.code, "HTTP ${response.code} for $url")
             }
-        }
+            val body = response.body
+                ?: throw HttpTextFetcher.HttpException(response.code, "Empty body for $url")
 
-    override suspend fun getTextHead(url: String, maxBytes: Int, headers: Map<String, String>): String =
-        withContext(Dispatchers.IO) {
-            client.newCall(request(url, headers).header("Range", "bytes=0-$maxBytes").build())
-                .execute().use { response ->
-                    if (!response.isSuccessful) {
-                        throw HttpTextFetcher.HttpException(response.code, "HTTP ${response.code} for $url")
+            // Fail fast on a declared oversized body. Content-Length is advisory
+            // (absent on chunked responses, sometimes wrong), so the read below
+            // still enforces the cap; this only avoids downloading the obvious
+            // cases at all.
+            val declared = body.contentLength()
+            if (declared > maxBytes) {
+                throw HttpTextFetcher.ResponseTooLargeException(maxBytes, url)
+            }
+
+            // Read incrementally instead of body.string(): the whole point is to
+            // stop before the allocation, not after. The initial capacity is
+            // clamped so a bogus Content-Length cannot itself allocate hugely.
+            val initial = if (declared in 1..maxBytes.toLong()) declared.toInt() else 64 * 1024
+            val out = ByteArrayOutputStream(initial)
+            val chunk = ByteArray(16 * 1024)
+            var total = 0
+            body.byteStream().use { stream ->
+                while (true) {
+                    val read = stream.read(chunk)
+                    if (read < 0) break
+                    total += read
+                    if (total > maxBytes) {
+                        throw HttpTextFetcher.ResponseTooLargeException(maxBytes, url)
                     }
-                    val body = response.body
-                        ?: throw HttpTextFetcher.HttpException(response.code, "Empty body for $url")
-                    val out = ByteArrayOutputStream()
-                    val chunk = ByteArray(8 * 1024)
-                    var total = 0
-                    body.byteStream().use { stream ->
-                        while (total < maxBytes) {
-                            val want = minOf(chunk.size, maxBytes - total)
-                            val read = stream.read(chunk, 0, want)
-                            if (read <= 0) break
-                            out.write(chunk, 0, read)
-                            total += read
-                        }
-                    }
-                    out.toString("UTF-8")
+                    out.write(chunk, 0, read)
                 }
+            }
+            out.toString("UTF-8")
         }
+    }
 
     override suspend fun openStream(url: String, headers: Map<String, String>): InputStream =
         withContext(Dispatchers.IO) {

@@ -14,10 +14,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -42,6 +45,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -58,6 +65,7 @@ fun SourcesScreen(
     val sources by appViewModel.sources.collectAsStateWithLifecycle()
     val statuses by appViewModel.statuses.collectAsStateWithLifecycle()
     val refreshing by appViewModel.refreshing.collectAsStateWithLifecycle()
+    val sourcesCorrupt by appViewModel.sourcesCorrupt.collectAsStateWithLifecycle()
 
     var showAddDialog by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<PlaylistSource?>(null) }
@@ -95,6 +103,18 @@ fun SourcesScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (sourcesCorrupt) {
+                    Spacer(Modifier.height(8.dp))
+                    // Without this the screen shows only the built-ins and looks
+                    // like a fresh install — the user would have no way to tell
+                    // that their own sources failed to load.
+                    Text(
+                        text = "读取本地源配置失败，下面显示的是内置源；你之前添加的源没有被覆盖，" +
+                            "重新添加即可，或卸载重装前先备份应用数据。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { appViewModel.enableBuiltinSources() }, enabled = !refreshing) {
@@ -249,6 +269,7 @@ private fun AddSourceDialog(
     var user by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
     var path by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
 
     val valid = when (kind) {
         SourceKind.REMOTE_M3U -> url.trim().startsWith("http")
@@ -321,6 +342,32 @@ private fun AddSourceDialog(
                             onValueChange = { pass = it },
                             label = { Text("密码") },
                             singleLine = true,
+                            // Masked by default: this dialog is the one place the
+                            // Xtream password is shown, and it is a real credential
+                            // (it also ends up in the stream URLs). The toggle uses
+                            // ASCII digits/letters only, so the field can stay in the
+                            // default keyboard mode.
+                            visualTransformation = if (passwordVisible) {
+                                VisualTransformation.None
+                            } else {
+                                PasswordVisualTransformation()
+                            },
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Password,
+                                imeAction = ImeAction.Done,
+                            ),
+                            trailingIcon = {
+                                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                    Icon(
+                                        imageVector = if (passwordVisible) {
+                                            Icons.Filled.VisibilityOff
+                                        } else {
+                                            Icons.Filled.Visibility
+                                        },
+                                        contentDescription = if (passwordVisible) "隐藏密码" else "显示密码",
+                                    )
+                                }
+                            },
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }

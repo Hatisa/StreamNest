@@ -42,11 +42,7 @@ data class Stream(
     val label: String? = null,
     val httpReferrer: String? = null,
     val httpUserAgent: String? = null,
-) {
-    /** The channel as declared, without any credential redaction. */
-    val host: String
-        get() = url.substringAfter("://", url).substringBefore('/').substringBefore('?')
-}
+)
 
 @Serializable
 data class Channel(
@@ -71,7 +67,6 @@ data class Channel(
     val health: Double = 0.5,
 ) {
     val primaryStream: Stream? get() = streams.firstOrNull()
-    val isPlayable: Boolean get() = streams.isNotEmpty()
 }
 
 object ChannelKeys {
@@ -125,8 +120,6 @@ data class HealthRecord(
     val failureKind: String? = null,
     val measuredAt: Long = 0L,
 )
-
-enum class EpgStatus { UNKNOWN, FRESH, STALE }
 
 @Serializable
 data class EpgProgramme(

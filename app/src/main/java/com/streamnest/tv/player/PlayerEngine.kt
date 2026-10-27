@@ -29,7 +29,4 @@ interface PlayerEngine {
 /** Engines available in this build, best-first. */
 object EngineRegistry {
     fun engines(): List<PlayerEngine> = listOf(Media3PlayerEngine)
-
-    fun byId(id: String?): PlayerEngine =
-        engines().firstOrNull { it.id == id } ?: Media3PlayerEngine
 }

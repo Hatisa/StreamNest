@@ -3,6 +3,17 @@ package com.streamnest.tv.data.source
 import java.io.InputStream
 
 /**
+ * Upper bound on a response this app is willing to buffer as a single String.
+ *
+ * Playlists and `player_api.php` bodies are normally a few megabytes; the
+ * generous cap only exists so that a misconfigured or hostile source cannot make
+ * the app allocate until it dies. A truncated/huge body is rejected outright
+ * rather than parsed partially, because a half-parsed playlist would otherwise
+ * look like a legitimately short one.
+ */
+const val MAX_TEXT_RESPONSE_BYTES = 32 * 1024 * 1024
+
+/**
  * Minimal HTTP client used by the parsers and the health prober.
  *
  * Kept as an interface so all parsing/aggregation/scoring can be unit-tested on
@@ -10,13 +21,15 @@ import java.io.InputStream
  */
 interface HttpTextFetcher {
 
-    suspend fun getText(url: String, headers: Map<String, String> = emptyMap()): String
-
-    /** Fetches at most [maxBytes] bytes — used to probe or sniff large files. */
-    suspend fun getTextHead(
+    /**
+     * Fetches the body as text, refusing to buffer more than [maxBytes].
+     *
+     * @throws ResponseTooLargeException when the source exceeds [maxBytes].
+     */
+    suspend fun getText(
         url: String,
-        maxBytes: Int = 64 * 1024,
         headers: Map<String, String> = emptyMap(),
+        maxBytes: Int = MAX_TEXT_RESPONSE_BYTES,
     ): String
 
     /**
@@ -27,6 +40,10 @@ interface HttpTextFetcher {
     suspend fun openStream(url: String, headers: Map<String, String> = emptyMap()): InputStream
 
     class HttpException(val statusCode: Int, message: String) : Exception(message)
+
+    /** Guards against unbounded buffering — see [MAX_TEXT_RESPONSE_BYTES]. */
+    class ResponseTooLargeException(limitBytes: Int, url: String) :
+        Exception("响应超过 ${limitBytes / (1024 * 1024)} MB 上限，已中止下载：$url")
 }
 
 object HttpHeaders {
