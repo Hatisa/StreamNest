@@ -36,6 +36,12 @@ object M3uParser {
         val merged = LinkedHashMap<String, MutableChannel>()
         var pending: Pending? = null
         var carriedGroup: String? = null
+        // Player options that appeared *after* the previous entry's URL. Like
+        // #EXTGRP they describe the entry that follows, so they are carried
+        // forward instead of dropped: public playlists write the User-Agent and
+        // Referer in that position, and losing them makes the stream 403.
+        var carriedUserAgent: String? = null
+        var carriedReferrer: String? = null
         // Whether the current #EXTINF has already consumed a URL. Consecutive
         // URLs are mirrors of the same channel, so `pending` deliberately
         // survives them; but a directive that shows up *after* a URL belongs to
@@ -47,7 +53,16 @@ object M3uParser {
             val upper = line.uppercase()
             when {
                 upper.startsWith("#EXTINF") -> {
-                    pending = parseExtInf(line)
+                    val next = parseExtInf(line)
+                    // Options seen after the previous URL belong to this entry,
+                    // and only to this one.
+                    if (next != null) {
+                        carriedUserAgent?.let { ua -> if (next.userAgent == null) next.userAgent = ua }
+                        carriedReferrer?.let { ref -> if (next.referrer == null) next.referrer = ref }
+                    }
+                    carriedUserAgent = null
+                    carriedReferrer = null
+                    pending = next
                     pendingHasUrl = false
                 }
 
@@ -62,11 +77,21 @@ object M3uParser {
                 }
 
                 upper.startsWith("#EXTVLCOPT:") || upper.startsWith("#KODIPROP:") -> {
+                    val option = line.substringAfter(':')
                     if (pendingHasUrl) {
-                        // Player options after the URL describe the next entry.
+                        // Player options after the URL describe the next entry:
+                        // carry them there rather than discarding them.
+                        val key = option.substringBefore('=', "").trim().lowercase()
+                        val value = option.substringAfter('=', "").trim()
+                        if (value.isNotEmpty()) {
+                            when (key) {
+                                "http-user-agent", "user-agent" -> carriedUserAgent = value
+                                "http-referrer", "referrer", "referer" -> carriedReferrer = value
+                            }
+                        }
                         pending = null
                     } else {
-                        pending?.withOption(line.substringAfter(':'))
+                        pending?.withOption(option)
                     }
                 }
 
